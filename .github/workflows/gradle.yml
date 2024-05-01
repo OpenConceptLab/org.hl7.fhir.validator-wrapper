@@ -42,6 +42,9 @@ jobs:
     - name: Build with Gradle Wrapper
       run: ./gradlew build
 
+    - name: Add GITHUB_SHA_SHORT env property with commit short sha
+      run: echo "GITHUB_SHA_SHORT=`echo ${GITHUB_SHA} | cut -c1-8`" >> $GITHUB_ENV
+      
     - name: Log in to Docker Hub
       uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
       with:
