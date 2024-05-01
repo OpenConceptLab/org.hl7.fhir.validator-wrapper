@@ -50,3 +50,74 @@ jobs:
         context: .
         push: true
         tags: openconceptlab/validator-wrapper:nightly, openconceptlab/validator-wrapper:1.0.53-${{env.GITHUB_SHA_SHORT}}
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    name: Release draft
+    environment: rc
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+      - name: Add GITHUB_SHA_SHORT env property with commit short sha
+        run: echo "GITHUB_SHA_SHORT=`echo ${GITHUB_SHA} | cut -c1-8`" >> $GITHUB_ENV
+      - name: Tag and release
+        uses: avakar/tag-and-release@v1
+        with:
+          tag_name: 1.0.53--${{env.GITHUB_SHA_SHORT}}
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    needs: [release]
+    name: Deploy to QA
+    runs-on: ubuntu-latest
+    environment: qa
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      - name: Checkout repo
+        uses: actions/checkout@v3
+      - name: Add GITHUB_SHA_SHORT env property with commit short sha
+        run: echo "GITHUB_SHA_SHORT=`echo ${GITHUB_SHA} | cut -c1-8`" >> $GITHUB_ENV
+      - name: Push image to Amazon ECR
+        id: push-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: 1.0.53--${{env.GITHUB_SHA_SHORT}}
+        run: |
+          # Build a docker container and
+          # push it to ECR so that it can
+          # be deployed to ECS.
+          docker pull openconceptlab/validator-wrapper:$IMAGE_TAG
+          docker tag openconceptlab/validator-wrapper:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag openconceptlab/validator-wrapper:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:qa
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:qa
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition --task-definition $ECS_SERVICE --query taskDefinition > task-definition.json
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: "task-definition.json"
+          container-name: ${{ env.ECS_SERVICE }}
+          image: ${{ steps.push-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
